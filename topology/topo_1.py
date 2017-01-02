@@ -7,8 +7,8 @@ class MulticastTopology(Topo):
     def __init__(self, *args, **params):
         super(MulticastTopology, self).__init__(*args, **params)
 
-        serv1 = self.addHost('serv1', ip='10.0.0.1')
-        serv2 = self.addHost('serv2', ip='10.0.0.1')
+        serv1 = self.addHost('serv1')
+        serv2 = self.addHost('serv2')
 
         s1 = self.addSwitch('s1')
         s2 = self.addSwitch('s2')
