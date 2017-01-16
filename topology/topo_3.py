@@ -16,7 +16,8 @@ def my_net():
                   switch=OVSKernelSwitch)
 
     info('*** Adding controller\n')
-    c0 = net.addController('c0', controller=RemoteController, ip="192.168.56.1", port=6633)
+    c0 = net.addController('c0', controller=RemoteController, ip="192.168.56.1", port=6633, autoSetMacs=True,
+                           xterms=True)
 
     info('*** Adding hosts\n')
     serv1 = net.addHost('serv1', ip='10.0.0.1', mac='00:00:00:00:00:06')
@@ -65,8 +66,8 @@ def my_net():
 
     # cmd = ["socat", "UDP4-RECVFROM:1234,ip-add-membership=239.192.0.1:10.0.0.3"]
     # h3.popen(cmd)
-    lldp_command = 'python /media/sf_psik-multicast/packet/lldp_generator.py {0} {1}'
-    h3.cmdPrint(lldp_command.format('h3-eth0', '00:00:00:00:00:08'))
+    # lldp_command = 'python /media/sf_psik-multicast/packet/lldp_generator.py {0} {1}'
+    # h3.cmdPrint(lldp_command.format('h3-eth0', '00:00:00:00:00:08'))
 
     info('*** Running CLI\n')
     CLI(net)
