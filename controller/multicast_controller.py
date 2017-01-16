@@ -90,7 +90,7 @@ class MulticastController(app_manager.RyuApp):
                     self.logger.info('new multicast group created: {0}'.format(group_address))
                     self.groups.setdefault(group_address, [])
                     self.group_objects.update({group_address:
-                                                   MulticastGroup(self, group_address, self.links, self.dpid_to_port)})
+                                                   MulticastGroup(group_address, self.links, self.dpid_to_port)})
 
                 if ipv4_src not in self.groups[group_address]:
                     self.groups[group_address].append(ipv4_pkt.src)
@@ -98,6 +98,9 @@ class MulticastController(app_manager.RyuApp):
                     self.logger.info('groups: {0}'.format(self.group_objects))
                     group = self.group_objects[group_address]
                     group.join_host(ipv4_src, datapath.id, in_port)
+                    if group.has_source():
+                        self.add_group_flows(parser, ofproto, group.get_group_entries())
+
         else:
             udp_pkt = pkt.get_protocol(udp.udp)
             if not udp_pkt:
@@ -113,30 +116,54 @@ class MulticastController(app_manager.RyuApp):
                 if ipv4_dst in self.group_objects.keys():
                     group = self.group_objects[ipv4_dst]
                     group.set_source_address(ipv4_src, datapath.id, in_port)
-            graph = nx.Graph()
-            graph.add_edges_from(self.links)
-
-            shortest_path = nx.shortest_path(graph, ipv4_pkt.src, self.groups[ipv4_pkt.dst][0])
-            self.logger.info('shortest_path: {0}'.format(shortest_path))
-            for node in shortest_path[1:-1]:
-                index = shortest_path.index(node)
-                prev_node = shortest_path[index - 1]
-                next_node = shortest_path[index + 1]
-                switch_dp = api.get_datapath(self, node)
-                input_port = self.dpid_to_port[node][prev_node]
-                output_port = self.dpid_to_port[node][next_node]
-                self.logger.info(self.dpid_to_port)
-                self.logger.info("node: {0}, input: {1}, output: {2}".format(node, input_port, output_port))
-                match = parser.OFPMatch(in_port=input_port, eth_type=0x800,
-                                        ipv4_dst=ipv4_pkt.dst)
-                actions = [parser.OFPActionOutput(output_port)]
-                inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
-                                                     actions)]
-                mod = parser.OFPFlowMod(datapath=switch_dp, priority=1,
-                                        match=match, instructions=inst)
-                switch_dp.send_msg(mod)
+                    self.add_group_flows(parser, ofproto, group.get_group_entries())
+                    # graph = nx.Graph()
+                    # graph.add_edges_from(self.links)
+                    #
+                    # shortest_path = nx.shortest_path(graph, ipv4_pkt.src, self.groups[ipv4_pkt.dst][0])
+                    # self.logger.info('shortest_path: {0}'.format(shortest_path))
+                    # for node in shortest_path[1:-1]:
+                    #     index = shortest_path.index(node)
+                    #     prev_node = shortest_path[index - 1]
+                    #     next_node = shortest_path[index + 1]
+                    #     switch_dp = api.get_datapath(self, node)
+                    #     input_port = self.dpid_to_port[node][prev_node]
+                    #     output_port = self.dpid_to_port[node][next_node]
+                    #     self.logger.info(self.dpid_to_port)
+                    #     self.logger.info("node: {0}, input: {1}, output: {2}".format(node, input_port, output_port))
+                    #     match = parser.OFPMatch(in_port=input_port, eth_type=0x800,
+                    #                             ipv4_dst=ipv4_pkt.dst)
+                    #     actions = [parser.OFPActionOutput(output_port)]
+                    #     inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
+                    #                                          actions)]
+                    #     mod = parser.OFPFlowMod(datapath=switch_dp, priority=1,
+                    #                             match=match, instructions=inst)
+                    #     switch_dp.send_msg(mod)
 
         pass
+
+    def add_group_flows(self, parser, ofproto, group_entries):
+        for dpid in group_entries:
+
+            ports = group_entries[dpid]
+            for port in ports:
+                entry = ports[port]
+                if entry:
+                    self.logger.info('entry: {0}'.format(entry))
+                    entry_match = entry['match']
+                    datapath = api.get_datapath(self, dpid)
+                    match = parser.OFPMatch(in_port=entry_match['in_port'], eth_type=entry_match['eth_type'],
+                                            ipv4_dst=entry_match['ipv4_dst'])
+                    actions = [parser.OFPActionOutput(output_port) for output_port in entry['actions_output_ports']]
+                    buckets = [parser.OFPBucket(actions=actions)]
+                    req_group = parser.OFPGroupMod(datapath=datapath, command=ofproto.OFPGC_ADD,
+                                                   type_=ofproto.OFPGT_ALL, group_id=entry['group_id'], buckets=buckets)
+                    inst = [
+                        parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
+                                                     [parser.OFPActionGroup(group_id=entry['group_id'])])]
+                    req_flow = parser.OFPFlowMod(datapath=datapath, priority=1, match=match, instructions=inst)
+                    datapath.send_msg(req_group)
+                    datapath.send_msg(req_flow)
 
     @set_ev_cls(event.EventSwitchEnter)
     def get_switches_data(self, ev):
@@ -174,56 +201,54 @@ class MulticastController(app_manager.RyuApp):
 
 
 class MulticastGroup:
-    source_address = None
-    graph = nx.Graph()
-    shortest_paths = {}
-    host_adresses = []
-    group_entries = {}
+    _source_address = None
+    _graph = nx.Graph()
+    _shortest_paths = {}
+    _host_adresses = []
+    _group_entries = {}
 
-    def __init__(self, controller, multicast_group_address, network, dpid_to_port):
+    def __init__(self, multicast_group_address, network, dpid_to_port):
         self.name = self.__class__.__name__
-        self.controller = controller
         self.logger = logging.getLogger(self.name)
         self.multicast_group_address = multicast_group_address
         self.network = network
         self.dpid_to_port = dpid_to_port
-        self.graph.add_edges_from(network)
-        for node in self.graph.nodes():
-            self.group_entries.setdefault(node, {})
+        self._graph.add_edges_from(network)
+        for node in self._graph.nodes():
+            self._group_entries.setdefault(node, {})
         self.logger.info('new multicast group object created: {0}'.format(multicast_group_address))
 
     def set_source_address(self, source_address, switch_dpid, port):
-        if not self.source_address:
-            self.source_address = source_address
+        if not self._source_address:
+            self._source_address = source_address
             self.logger.info('multicast group: {0}, source address set: {1}'.format(self.multicast_group_address,
-                                                                                    self.source_address))
+                                                                                    self._source_address))
             self.update_network_data(source_address, switch_dpid, port)
         else:
             raise Exception
-        for host_address in self.host_adresses:
+        for host_address in self._host_adresses:
             self.update_shortest_paths(host_address)
             self.generate_flow_entry(host_address)
 
     def join_host(self, dst_address, switch_dpid, port):
-        if dst_address not in self.host_adresses:
-            self.host_adresses.append(dst_address)
+        if dst_address not in self._host_adresses:
+            self._host_adresses.append(dst_address)
             self.update_network_data(dst_address, switch_dpid, port)
-            if self.source_address:
+            if self._source_address:
                 self.update_shortest_paths(dst_address)
                 self.generate_flow_entry(dst_address)
 
     def generate_flow_entry(self, dst_address):
-        path = self.shortest_paths[dst_address]
+        path = self._shortest_paths[dst_address]
         for node in path[1:-1]:
             index = path.index(node)
             prev_node = path[index - 1]
             next_node = path[index + 1]
-            switch_dp = api.get_datapath(self.controller, node)
             input_port = self.dpid_to_port[node][prev_node]
             output_port = self.dpid_to_port[node][next_node]
             self.logger.info(self.dpid_to_port)
-            if input_port not in self.group_entries[switch_dp.id]:
-                self.group_entries[switch_dp.id][input_port] = {
+            if input_port not in self._group_entries[node]:
+                self._group_entries[node][input_port] = {
                     'group_id': index,
                     'match': {
                         'in_port': input_port,
@@ -233,22 +258,28 @@ class MulticastGroup:
                     'actions_output_ports': set([output_port])
                 }
             else:
-                self.group_entries[switch_dp.id][input_port]['actions_output_ports'].add(output_port)
-        self.logger.info('group_entries: {0}'.format(self.group_entries))
+                self._group_entries[node][input_port]['actions_output_ports'].add(output_port)
+        self.logger.info('group_entries: {0}'.format(self._group_entries))
 
     def update_shortest_paths(self, dst_address):
-        self.shortest_paths.update({dst_address: nx.shortest_path(self.graph, self.source_address, dst_address)})
-        self.logger.info('shortest paths: {0}'.format(self.shortest_paths))
+        self._shortest_paths.update({dst_address: nx.shortest_path(self._graph, self._source_address, dst_address)})
+        self.logger.info('shortest paths: {0}'.format(self._shortest_paths))
 
     def update_network_data(self, host_address, switch_dpid, port):
-        self.graph.add_edge(switch_dpid, host_address)
-        self.graph.add_edge(host_address, switch_dpid)
+        self._graph.add_edge(switch_dpid, host_address)
+        self._graph.add_edge(host_address, switch_dpid)
         self.dpid_to_port[switch_dpid][host_address] = port
         self.dpid_to_port.setdefault(host_address, {})
         self.dpid_to_port[host_address][switch_dpid] = port
 
     def get_host_addresses(self):
-        return self.host_adresses
+        return self._host_adresses
+
+    def get_group_entries(self):
+        return self._group_entries
+
+    def has_source(self):
+        return self._source_address is not None
 
 
 class FlowEntry:
