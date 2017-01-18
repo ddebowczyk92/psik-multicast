@@ -155,7 +155,7 @@ class MulticastController(app_manager.RyuApp):
                     match = parser.OFPMatch(in_port=entry_match['in_port'], eth_type=entry_match['eth_type'],
                                             ipv4_dst=entry_match['ipv4_dst'])
                     actions = [parser.OFPActionOutput(output_port) for output_port in entry['actions_output_ports']]
-                    buckets = [parser.OFPBucket(actions=actions)]
+                    buckets = [parser.OFPBucket(actions=[action]) for action in actions]
                     req_group = parser.OFPGroupMod(datapath=datapath, command=ofproto.OFPGC_ADD,
                                                    type_=ofproto.OFPGT_ALL, group_id=entry['group_id'], buckets=buckets)
                     inst = [
