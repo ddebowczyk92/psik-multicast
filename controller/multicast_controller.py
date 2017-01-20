@@ -87,7 +87,7 @@ class MulticastController(app_manager.RyuApp):
             udp_pkt = pkt.get_protocol(udp.udp)
             if not udp_pkt:
                 return
-            self.logger.info('reveived udp packet: {0}'.format(udp_pkt))
+            self.logger.info('received udp packet: {0}'.format(udp_pkt))
             if ipv4_src not in self._hosts.keys():
                 self._hosts.setdefault(ipv4_src, None)
                 self._links.append((ipv4_src, datapath.id))
@@ -98,14 +98,14 @@ class MulticastController(app_manager.RyuApp):
                 if ipv4_dst in self._group_objects.keys():
                     group = self._group_objects[ipv4_dst]
                     group.set_source_address(ipv4_src, datapath.id, in_port)
-                    self.add_group_flows(parser, ofproto, group.get_group_entries(), msg)
+                    self.add_group_flows(parser, ofproto, group.get_group_entries())
 
-                    data = None
-                    if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-                        data = msg.data
-                    out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
-                                              in_port=in_port, data=data, actions=[])
-                    datapath.send_msg(out)
+                    # data = None
+                    # if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+                    #     data = msg.data
+                    # out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                    #                           in_port=in_port, data=data, actions=[])
+                    # datapath.send_msg(out)
 
         pass
 
@@ -144,20 +144,20 @@ class MulticastController(app_manager.RyuApp):
         self._links.append((ev.link.src.dpid, ev.link.dst.dpid))
         self.logger.info('link added: src: {0}, dst: {1}'.format(ev.link.src.dpid, ev.link.dst.dpid))
 
-    def add_group_flows(self, parser, ofproto, group_entries, msg):
+    def add_group_flows(self, parser, ofproto, group_entries):
         for dpid in group_entries:
             ports = group_entries[dpid]
             for port in ports:
                 entry = ports[port]
                 if entry:
-                    self.logger.info('entry: {0}'.format(entry))
+                    self.logger.info('entry for dpid {0}: {1}'.format(dpid, entry))
                     entry_match = entry['match']
                     datapath = api.get_datapath(self, dpid)
-                    group_mod_type = ofproto.OFPGC_ADD
+                    group_mod_command = ofproto.OFPGC_ADD
                     group_id = None
                     if entry_match['ipv4_dst'] in self._group_ids[dpid]:
                         group_id = self._group_ids[dpid][entry_match['ipv4_dst']]
-                        group_mod_type = ofproto.OFPGC_MODIFY
+                        group_mod_command = ofproto.OFPGC_MODIFY
                     else:
                         group_id = self.get_next_group_id(dpid, entry_match['ipv4_dst'])
 
@@ -165,8 +165,8 @@ class MulticastController(app_manager.RyuApp):
                                             ipv4_dst=entry_match['ipv4_dst'])
                     actions = [parser.OFPActionOutput(output_port) for output_port in entry['actions_output_ports']]
                     buckets = [parser.OFPBucket(actions=[action]) for action in actions]
-                    req_group = parser.OFPGroupMod(datapath=datapath, command=ofproto.OFPGC_ADD,
-                                                   type_=group_mod_type, group_id=group_id, buckets=buckets)
+                    req_group = parser.OFPGroupMod(datapath=datapath, command=group_mod_command,
+                                                   type_=ofproto.OFPGT_ALL, group_id=group_id, buckets=buckets)
                     inst = [
                         parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
                                                      [parser.OFPActionGroup(group_id=group_id)])]
@@ -197,16 +197,15 @@ class MulticastController(app_manager.RyuApp):
 
 
 class MulticastGroup:
-    _source_address = None
-    _graph = nx.Graph()
-    _shortest_paths = {}
-    _host_adresses = []
-    _group_entries = {}
-
     def __init__(self, multicast_group_address, network, dpid_to_port):
         self.name = self.__class__.__name__
         self.logger = logging.getLogger(self.name)
         self.multicast_group_address = multicast_group_address
+        self._source_address = None
+        self._graph = nx.Graph()
+        self._shortest_paths = {}
+        self._host_adresses = []
+        self._group_entries = {}
         self._dpid_to_port = dpid_to_port
         self._graph.add_edges_from(network)
         for node in self._graph.nodes():
@@ -242,6 +241,7 @@ class MulticastGroup:
             self.logger.info('host {0} left group {1}'.format(dst_address, self.multicast_group_address))
 
     def generate_flow_entry(self, dst_address):
+
         path = self._shortest_paths[dst_address]
         for node in path[1:-1]:
             index = path.index(node)
